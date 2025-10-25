@@ -9,7 +9,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:push": "prisma db push",
-    "init-db": "npm run prisma:push && ts-node --project tsconfig.json scripts/init-db.ts"
+    "init-db": "npm run prisma:push && tsx scripts/init-db.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -26,6 +26,7 @@
     "eslint-config-next": "^14.2.5",
     "prisma": "^5.22.0",
     "ts-node": "^10.9.2",
+    "tsx": "^4.11.0",
     "typescript": "^5.4.5"
   }
 }
