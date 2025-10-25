@@ -9,7 +9,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:push": "prisma db push",
-    "init-db": "npm run prisma:push && tsx scripts/init-db.ts"
+    "init-db": "npm run prisma:push && tsx scripts/init-db.ts",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
