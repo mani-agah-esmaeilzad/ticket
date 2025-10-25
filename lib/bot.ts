@@ -3,7 +3,6 @@ import {
   approveOrder,
   clearUserState,
   createOrder,
-  ensureSchema,
   freezeHeldSeats,
   getOrder,
   getShow,
@@ -29,11 +28,6 @@ const ADMINS = (process.env.ADMINS ?? "")
 const HOLD_MINUTES = Number(process.env.HOLD_MINUTES ?? "10");
 
 const bot = new Bot(BOT_TOKEN);
-
-bot.use(async (ctx, next) => {
-  await ensureSchema();
-  await next();
-});
 
 bot.command("start", async (ctx) => {
   await ctx.reply("سلام 👋 به ربات فروش بلیت خوش اومدی!\nبرای شروع دستور /buy رو بزن.");
