@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("POSTGRES_PRISMA_URL")
+}
+
+model Show {
+  id        Int      @id @default(autoincrement())
+  title     String
+  startsAt  DateTime @map("starts_at")
+  rows      Int
+  cols      Int
+  price     Int
+  seats     Seat[]
+  orders    Order[]
+  sessions  UserSession[]
+
+  @@map("shows")
+}
+
+model Seat {
+  id        Int       @id @default(autoincrement())
+  showId    Int       @map("show_id")
+  seatCode  String    @map("seat_code")
+  status    SeatStatus @default(available)
+  heldBy    String?   @map("held_by")
+  holdUntil DateTime? @map("hold_until")
+  buyerId   String?   @map("buyer_id")
+  show      Show      @relation(fields: [showId], references: [id], onDelete: Cascade)
+
+  @@unique([showId, seatCode])
+  @@map("seats")
+}
+
+enum SeatStatus {
+  available
+  held
+  sold
+}
+
+model Order {
+  id          Int       @id @default(autoincrement())
+  userId      String    @map("user_id")
+  showId      Int       @map("show_id")
+  seats       String
+  amount      Int
+  receiptType String    @map("receipt_type")
+  receiptRef  String    @map("receipt_ref")
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  paidAt      DateTime? @map("paid_at")
+  adminId     String?   @map("admin_id")
+  show        Show      @relation(fields: [showId], references: [id], onDelete: Cascade)
+
+  @@map("orders")
+}
+
+model UserSession {
+  userId   String   @id @map("user_id")
+  state    String?
+  showId   Int?     @map("show_id")
+  seats    String?
+  total    Int?
+  updatedAt DateTime @default(now()) @map("updated_at")
+  show     Show?     @relation(fields: [showId], references: [id], onDelete: SetNull)
+
+  @@map("user_sessions")
+}

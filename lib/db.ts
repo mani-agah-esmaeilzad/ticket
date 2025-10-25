@@ -1,4 +1,5 @@
-import { sql, type VercelPoolClient } from "@vercel/postgres";
+import { Prisma, SeatStatus } from "@prisma/client";
+import { prisma } from "./prisma";
 
 export type ShowRecord = {
   id: number;
@@ -40,68 +41,27 @@ let schemaInitialized: Promise<void> | null = null;
 export function ensureSchema(): Promise<void> {
   if (!schemaInitialized) {
     schemaInitialized = (async () => {
-      await sql`
-        CREATE TABLE IF NOT EXISTS shows (
-          id SERIAL PRIMARY KEY,
-          title TEXT NOT NULL,
-          starts_at TIMESTAMP WITH TIME ZONE NOT NULL,
-          rows INTEGER NOT NULL,
-          cols INTEGER NOT NULL,
-          price INTEGER NOT NULL
-        )
-      `;
-
-      await sql`
-        CREATE TABLE IF NOT EXISTS seats (
-          id SERIAL PRIMARY KEY,
-          show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
-          seat_code TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'available',
-          held_by TEXT,
-          hold_until TIMESTAMP WITH TIME ZONE,
-          buyer_id TEXT,
-          CONSTRAINT unique_seat UNIQUE(show_id, seat_code)
-        )
-      `;
-
-      await sql`
-        CREATE TABLE IF NOT EXISTS orders (
-          id SERIAL PRIMARY KEY,
-          user_id TEXT NOT NULL,
-          show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
-          seats TEXT NOT NULL,
-          amount INTEGER NOT NULL,
-          receipt_type TEXT NOT NULL,
-          receipt_ref TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          paid_at TIMESTAMP WITH TIME ZONE,
-          admin_id TEXT
-        )
-      `;
-
-      await sql`
-        CREATE TABLE IF NOT EXISTS user_sessions (
-          user_id TEXT PRIMARY KEY,
-          state TEXT,
-          show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
-          seats TEXT,
-          total INTEGER,
-          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `;
-
-      const { rowCount } = await sql`SELECT id FROM shows LIMIT 1`;
-      if (rowCount === 0) {
-        const now = new Date();
-        const startsAt = new Date(now.getTime() + 2 * 60 * 60 * 1000);
-        const { rows } = await sql`
-          INSERT INTO shows (title, starts_at, rows, cols, price)
-          VALUES ('نمایش تست', ${startsAt.toISOString()}, 6, 10, 250000)
-          RETURNING id, rows, cols
-        `;
-        const show = rows[0];
-        await seedSeats(show.id, show.rows, show.cols);
+      try {
+        const showCount = await prisma.show.count();
+        if (showCount === 0) {
+          const startsAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+          const show = await prisma.show.create({
+            data: {
+              title: "نمایش تست",
+              startsAt,
+              rows: 6,
+              cols: 10,
+              price: 250000
+            }
+          });
+          await seedSeats(show.id, show.rows, show.cols);
+        }
+      } catch (error) {
+        schemaInitialized = null;
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2021") {
+          console.error("Database schema missing. Run `npm run init-db` to create tables.");
+        }
+        throw error;
       }
     })();
   }
@@ -110,49 +70,74 @@ export function ensureSchema(): Promise<void> {
 
 export async function seedSeats(showId: number, rows: number, cols: number): Promise<void> {
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".slice(0, rows);
-  const values: string[] = [];
+  const data = [] as { showId: number; seatCode: string }[];
   for (const letter of letters) {
     for (let col = 1; col <= cols; col += 1) {
-      const code = `${letter}${col}`;
-      values.push(`(${showId}, '${code}', 'available')`);
+      data.push({ showId, seatCode: `${letter}${col}` });
     }
   }
-  if (values.length > 0) {
-    const query = `
-      INSERT INTO seats (show_id, seat_code, status)
-      VALUES ${values.join(",")}
-      ON CONFLICT (show_id, seat_code) DO NOTHING
-    `;
-    await sql.query(query);
+  if (data.length > 0) {
+    await prisma.seat.createMany({
+      data: data.map((item) => ({ showId: item.showId, seatCode: item.seatCode })),
+      skipDuplicates: true
+    });
   }
 }
 
 export async function listShows(): Promise<ShowRecord[]> {
-  const { rows } = await sql<ShowRecord>`SELECT * FROM shows ORDER BY starts_at`;
-  return rows;
+  const shows = await prisma.show.findMany({ orderBy: { startsAt: "asc" } });
+  return shows.map((show) => ({
+    id: show.id,
+    title: show.title,
+    starts_at: show.startsAt.toISOString(),
+    rows: show.rows,
+    cols: show.cols,
+    price: show.price
+  }));
 }
 
 export async function getShow(showId: number): Promise<ShowRecord | null> {
-  const { rows } = await sql<ShowRecord>`SELECT * FROM shows WHERE id = ${showId}`;
-  return rows[0] ?? null;
+  const show = await prisma.show.findUnique({ where: { id: showId } });
+  if (!show) {
+    return null;
+  }
+  return {
+    id: show.id,
+    title: show.title,
+    starts_at: show.startsAt.toISOString(),
+    rows: show.rows,
+    cols: show.cols,
+    price: show.price
+  };
 }
 
 export async function releaseExpiredHolds(showId: number): Promise<void> {
-  await sql`
-    UPDATE seats
-    SET status = 'available', held_by = NULL, hold_until = NULL
-    WHERE show_id = ${showId}
-      AND status = 'held'
-      AND hold_until IS NOT NULL
-      AND hold_until < CURRENT_TIMESTAMP
-  `;
+  await prisma.seat.updateMany({
+    where: {
+      showId,
+      status: SeatStatus.held,
+      holdUntil: { lt: new Date() }
+    },
+    data: {
+      status: SeatStatus.available,
+      heldBy: null,
+      holdUntil: null
+    }
+  });
 }
 
 export async function seatStatusMap(showId: number): Promise<Record<string, SeatRecord>> {
   await releaseExpiredHolds(showId);
-  const { rows } = await sql<SeatRecord>`SELECT * FROM seats WHERE show_id = ${showId}`;
-  return rows.reduce<Record<string, SeatRecord>>((acc, seat) => {
-    acc[seat.seat_code] = seat;
+  const seats = await prisma.seat.findMany({ where: { showId } });
+  return seats.reduce<Record<string, SeatRecord>>((acc, seat) => {
+    acc[seat.seatCode] = {
+      show_id: seat.showId,
+      seat_code: seat.seatCode,
+      status: seat.status,
+      held_by: seat.heldBy,
+      hold_until: seat.holdUntil ? seat.holdUntil.toISOString() : null,
+      buyer_id: seat.buyerId
+    };
     return acc;
   }, {});
 }
@@ -163,111 +148,123 @@ export async function toggleSeat(
   userId: string,
   holdMinutes: number
 ): Promise<"sold" | "held" | "available" | "held-by-other"> {
-  return withTransaction(async (client) => {
-    await client.sql`
-      UPDATE seats
-      SET status = 'available', held_by = NULL, hold_until = NULL
-      WHERE show_id = ${showId}
-        AND seat_code = ${seatCode}
-        AND status = 'held'
-        AND hold_until IS NOT NULL
-        AND hold_until < CURRENT_TIMESTAMP
-    `;
+  return prisma.$transaction(async (tx) => {
+    await tx.seat.updateMany({
+      where: {
+        showId,
+        seatCode,
+        status: SeatStatus.held,
+        holdUntil: { lt: new Date() }
+      },
+      data: {
+        status: SeatStatus.available,
+        heldBy: null,
+        holdUntil: null
+      }
+    });
 
-    const { rows } = await client.sql<SeatRecord>`
-      SELECT * FROM seats
-      WHERE show_id = ${showId} AND seat_code = ${seatCode}
-      FOR UPDATE
-    `;
+    const seat = await tx.seat.findUnique({
+      where: { showId_seatCode: { showId, seatCode } }
+    });
 
-    if (rows.length === 0) {
+    if (!seat) {
       throw new Error("Seat not found");
     }
 
-    const seat = rows[0];
-    if (seat.status === "sold") {
+    if (seat.status === SeatStatus.sold) {
       return "sold";
     }
-    if (seat.status === "held" && seat.held_by && seat.held_by !== userId) {
+    if (seat.status === SeatStatus.held && seat.heldBy && seat.heldBy !== userId) {
       return "held-by-other";
     }
 
-    if (seat.status === "held" && seat.held_by === userId) {
-      await client.sql`
-        UPDATE seats
-        SET status = 'available', held_by = NULL, hold_until = NULL
-        WHERE show_id = ${showId} AND seat_code = ${seatCode}
-      `;
+    if (seat.status === SeatStatus.held && seat.heldBy === userId) {
+      await tx.seat.update({
+        where: { showId_seatCode: { showId, seatCode } },
+        data: {
+          status: SeatStatus.available,
+          heldBy: null,
+          holdUntil: null
+        }
+      });
       return "available";
     }
 
-    await client.sql`
-      UPDATE seats
-      SET status = 'held', held_by = ${userId}, hold_until = CURRENT_TIMESTAMP + make_interval(mins => ${holdMinutes})
-      WHERE show_id = ${showId} AND seat_code = ${seatCode}
-    `;
+    const holdUntil = new Date(Date.now() + holdMinutes * 60 * 1000);
+    await tx.seat.update({
+      where: { showId_seatCode: { showId, seatCode } },
+      data: {
+        status: SeatStatus.held,
+        heldBy: userId,
+        holdUntil
+      }
+    });
     return "held";
   });
 }
 
 export async function heldSeats(showId: number, userId: string): Promise<string[]> {
-  const { rows } = await sql<{ seat_code: string }>`
-    SELECT seat_code
-    FROM seats
-    WHERE show_id = ${showId}
-      AND held_by = ${userId}
-      AND status = 'held'
-    ORDER BY seat_code
-  `;
-  return rows.map((row) => row.seat_code);
+  const seats = await prisma.seat.findMany({
+    where: {
+      showId,
+      heldBy: userId,
+      status: SeatStatus.held
+    },
+    orderBy: { seatCode: "asc" },
+    select: { seatCode: true }
+  });
+  return seats.map((seat) => seat.seatCode);
 }
 
 export async function freezeHeldSeats(showId: number, userId: string): Promise<void> {
-  await sql`
-    UPDATE seats
-    SET hold_until = NULL
-    WHERE show_id = ${showId}
-      AND held_by = ${userId}
-      AND status = 'held'
-  `;
+  await prisma.seat.updateMany({
+    where: {
+      showId,
+      heldBy: userId,
+      status: SeatStatus.held
+    },
+    data: {
+      holdUntil: null
+    }
+  });
 }
 
 export async function setUserState(state: UserStateRecord): Promise<void> {
-  const seatsText = state.seats ? state.seats.join(",") : null;
-  await sql`
-    INSERT INTO user_sessions (user_id, state, show_id, seats, total, updated_at)
-    VALUES (${state.user_id}, ${state.state}, ${state.show_id}, ${seatsText}, ${state.total}, CURRENT_TIMESTAMP)
-    ON CONFLICT (user_id)
-    DO UPDATE SET
-      state = EXCLUDED.state,
-      show_id = EXCLUDED.show_id,
-      seats = EXCLUDED.seats,
-      total = EXCLUDED.total,
-      updated_at = CURRENT_TIMESTAMP
-  `;
+  await prisma.userSession.upsert({
+    where: { userId: state.user_id },
+    create: {
+      userId: state.user_id,
+      state: state.state ?? null,
+      showId: state.show_id ?? undefined,
+      seats: state.seats ? state.seats.join(",") : null,
+      total: state.total ?? null
+    },
+    update: {
+      state: state.state ?? null,
+      showId: state.show_id ?? undefined,
+      seats: state.seats ? state.seats.join(",") : null,
+      total: state.total ?? null,
+      updatedAt: new Date()
+    }
+  });
 }
 
 export async function getUserState(userId: string): Promise<UserStateRecord | null> {
-  const { rows } = await sql<{ user_id: string; state: string | null; show_id: number | null; seats: string | null; total: number | null }>`
-    SELECT user_id, state, show_id, seats, total
-    FROM user_sessions
-    WHERE user_id = ${userId}
-  `;
-  if (rows.length === 0) {
+  const session = await prisma.userSession.findUnique({ where: { userId } });
+  if (!session) {
     return null;
   }
-  const row = rows[0];
   return {
-    user_id: row.user_id,
-    state: row.state,
-    show_id: row.show_id,
-    seats: row.seats ? row.seats.split(",").filter(Boolean) : null,
-    total: row.total
+    user_id: session.userId,
+    state: session.state,
+    show_id: session.showId ?? null,
+    seats: session.seats ? session.seats.split(",").filter(Boolean) : null,
+    total: session.total ?? null
   };
 }
 
 export async function clearUserState(userId: string): Promise<void> {
-  await sql`DELETE FROM user_sessions WHERE user_id = ${userId}`;
+  await prisma.userSession.deleteMany({ where: { userId } });
 }
 
 export async function createOrder(params: {
@@ -278,154 +275,139 @@ export async function createOrder(params: {
   receiptType: "photo" | "text";
   receiptRef: string;
 }): Promise<number> {
-  const seatsText = params.seats.join(",");
-  const { rows } = await sql<{ id: number }>`
-    INSERT INTO orders (user_id, show_id, seats, amount, receipt_type, receipt_ref)
-    VALUES (${params.userId}, ${params.showId}, ${seatsText}, ${params.amount}, ${params.receiptType}, ${params.receiptRef})
-    RETURNING id
-  `;
-  return rows[0].id;
+  const order = await prisma.order.create({
+    data: {
+      userId: params.userId,
+      showId: params.showId,
+      seats: params.seats.join(","),
+      amount: params.amount,
+      receiptType: params.receiptType,
+      receiptRef: params.receiptRef
+    },
+    select: { id: true }
+  });
+  return order.id;
 }
 
 export async function getOrder(orderId: number): Promise<OrderRecord | null> {
-  const { rows } = await sql<{ id: number; user_id: string; show_id: number; seats: string; amount: number; status: string }>`
-    SELECT id, user_id, show_id, seats, amount, status
-    FROM orders
-    WHERE id = ${orderId}
-  `;
-  if (rows.length === 0) {
+  const order = await prisma.order.findUnique({ where: { id: orderId } });
+  if (!order) {
     return null;
   }
-  const row = rows[0];
   return {
-    id: row.id,
-    user_id: row.user_id,
-    show_id: row.show_id,
-    seats: row.seats.split(",").filter(Boolean),
-    amount: row.amount,
-    status: row.status
+    id: order.id,
+    user_id: order.userId,
+    show_id: order.showId,
+    seats: order.seats.split(",").filter(Boolean),
+    amount: order.amount,
+    status: order.status
   };
 }
 
 export async function approveOrder(orderId: number, adminId: string): Promise<OrderRecord | null> {
-  return withTransaction(async (client) => {
-    const { rows } = await client.sql<{ id: number; user_id: string; show_id: number; seats: string; amount: number; status: string }>`
-      SELECT * FROM orders
-      WHERE id = ${orderId}
-      FOR UPDATE
-    `;
-    if (rows.length === 0) {
+  return prisma.$transaction(async (tx) => {
+    const order = await tx.order.findUnique({ where: { id: orderId } });
+    if (!order) {
       return null;
     }
-    const orderRow = rows[0];
-    if (orderRow.status !== "pending") {
+    if (order.status !== "pending") {
       return {
-        id: orderRow.id,
-        user_id: orderRow.user_id,
-        show_id: orderRow.show_id,
-        seats: orderRow.seats.split(",").filter(Boolean),
-        amount: orderRow.amount,
-        status: orderRow.status
+        id: order.id,
+        user_id: order.userId,
+        show_id: order.showId,
+        seats: order.seats.split(",").filter(Boolean),
+        amount: order.amount,
+        status: order.status
       };
     }
 
-    const seats = orderRow.seats.split(",").filter(Boolean);
+    const seats = order.seats.split(",").filter(Boolean);
     if (seats.length > 0) {
-      await client.query(
-        `UPDATE seats
-         SET status = 'sold', buyer_id = $1, held_by = NULL, hold_until = NULL
-         WHERE show_id = $2 AND seat_code = ANY($3::text[])`,
-        [orderRow.user_id, orderRow.show_id, seats]
-      );
+      await tx.seat.updateMany({
+        where: {
+          showId: order.showId,
+          seatCode: { in: seats }
+        },
+        data: {
+          status: SeatStatus.sold,
+          buyerId: order.userId,
+          heldBy: null,
+          holdUntil: null
+        }
+      });
     }
 
-    await client.sql`
-      UPDATE orders
-      SET status = 'approved', paid_at = CURRENT_TIMESTAMP, admin_id = ${adminId}
-      WHERE id = ${orderId}
-    `;
-    await client.sql`
-      DELETE FROM user_sessions WHERE user_id = ${orderRow.user_id}
-    `;
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: "approved",
+        paidAt: new Date(),
+        adminId
+      }
+    });
+
+    await tx.userSession.deleteMany({ where: { userId: order.userId } });
 
     return {
-      id: orderRow.id,
-      user_id: orderRow.user_id,
-      show_id: orderRow.show_id,
+      id: order.id,
+      user_id: order.userId,
+      show_id: order.showId,
       seats,
-      amount: orderRow.amount,
+      amount: order.amount,
       status: "approved"
     };
   });
 }
 
 export async function rejectOrder(orderId: number, adminId: string): Promise<OrderRecord | null> {
-  return withTransaction(async (client) => {
-    const { rows } = await client.sql<{ id: number; user_id: string; show_id: number; seats: string; amount: number; status: string }>`
-      SELECT * FROM orders
-      WHERE id = ${orderId}
-      FOR UPDATE
-    `;
-    if (rows.length === 0) {
+  return prisma.$transaction(async (tx) => {
+    const order = await tx.order.findUnique({ where: { id: orderId } });
+    if (!order) {
       return null;
     }
-    const orderRow = rows[0];
-    if (orderRow.status !== "pending") {
+    if (order.status !== "pending") {
       return {
-        id: orderRow.id,
-        user_id: orderRow.user_id,
-        show_id: orderRow.show_id,
-        seats: orderRow.seats.split(",").filter(Boolean),
-        amount: orderRow.amount,
-        status: orderRow.status
+        id: order.id,
+        user_id: order.userId,
+        show_id: order.showId,
+        seats: order.seats.split(",").filter(Boolean),
+        amount: order.amount,
+        status: order.status
       };
     }
 
-    const seats = orderRow.seats.split(",").filter(Boolean);
+    const seats = order.seats.split(",").filter(Boolean);
     if (seats.length > 0) {
-      await client.query(
-        `UPDATE seats
-         SET status = 'available', held_by = NULL, hold_until = NULL
-         WHERE show_id = $1 AND seat_code = ANY($2::text[])`,
-        [orderRow.show_id, seats]
-      );
+      await tx.seat.updateMany({
+        where: {
+          showId: order.showId,
+          seatCode: { in: seats }
+        },
+        data: {
+          status: SeatStatus.available,
+          heldBy: null,
+          holdUntil: null
+        }
+      });
     }
 
-    await client.sql`
-      UPDATE orders
-      SET status = 'rejected', admin_id = ${adminId}
-      WHERE id = ${orderId}
-    `;
-    await client.sql`
-      DELETE FROM user_sessions WHERE user_id = ${orderRow.user_id}
-    `;
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: "rejected",
+        adminId
+      }
+    });
+
+    await tx.userSession.deleteMany({ where: { userId: order.userId } });
 
     return {
-      id: orderRow.id,
-      user_id: orderRow.user_id,
-      show_id: orderRow.show_id,
+      id: order.id,
+      user_id: order.userId,
+      show_id: order.showId,
       seats,
-      amount: orderRow.amount,
+      amount: order.amount,
       status: "rejected"
     };
   });
-}
-
-async function withTransaction<T>(fn: (client: VercelPoolClient) => Promise<T>): Promise<T> {
-  const client = await sql.connect();
-  try {
-    await client.sql`BEGIN`;
-    const result = await fn(client);
-    await client.sql`COMMIT`;
-    return result;
-  } catch (error) {
-    try {
-      await client.sql`ROLLBACK`;
-    } catch (rollbackError) {
-      console.error("Failed to rollback transaction", rollbackError);
-    }
-    throw error;
-  } finally {
-    client.release();
-  }
 }
