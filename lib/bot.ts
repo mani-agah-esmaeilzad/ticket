@@ -28,6 +28,19 @@ const ADMINS = (process.env.ADMINS ?? "")
 const HOLD_MINUTES = Number(process.env.HOLD_MINUTES ?? "10");
 
 const bot = new Bot(BOT_TOKEN);
+let botInitPromise: Promise<void> | null = null;
+
+async function ensureBotInitialized(): Promise<void> {
+  if (!botInitPromise) {
+    botInitPromise = bot
+      .init()
+      .catch((error) => {
+        botInitPromise = null;
+        throw error;
+      });
+  }
+  await botInitPromise;
+}
 
 bot.command("start", async (ctx) => {
   await ctx.reply("سلام 👋 به ربات فروش بلیت خوش اومدی!\nبرای شروع دستور /buy رو بزن.");
@@ -289,6 +302,7 @@ export const telegramBot = bot;
 export async function handleUpdate(request: Request): Promise<Response> {
   try {
     const update = await request.json();
+    await ensureBotInitialized();
     await bot.handleUpdate(update);
     return new Response("OK");
   } catch (error) {
