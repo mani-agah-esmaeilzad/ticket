@@ -1,4 +1,11 @@
-@import url("https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/dist/font-face.css");
+@font-face {
+  font-family: "Vazirmatn";
+  src: url("/fonts/Vazirmatn[wght].woff2") format("woff2 supports variations"),
+    url("/fonts/Vazirmatn[wght].woff2") format("woff2-variations"),
+    url("/fonts/Vazirmatn-Regular.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
 
 :root {
   color-scheme: light;
