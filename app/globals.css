@@ -1,8 +1,16 @@
+@import url("https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/dist/font-face.css");
+
 :root {
   color-scheme: light;
+  font-family: "Vazirmatn", sans-serif;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  font-family: inherit;
+}
+
+* {
+  font-family: inherit;
 }

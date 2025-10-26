@@ -64,7 +64,7 @@ export default async function AdminDashboardPage(): Promise<JSX.Element> {
   const rejectedCount = orders.filter((order) => order.status === "rejected").length;
 
   return (
-    <main style={{ padding: "2rem", background: "#f8fafc", minHeight: "100vh", fontFamily: "IranSans, sans-serif" }}>
+    <main style={{ padding: "2rem", background: "#f8fafc", minHeight: "100vh" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "2rem" }}>
         <div>
           <h1 style={{ margin: 0, fontSize: "1.8rem" }}>داشبورد مدیریت</h1>
